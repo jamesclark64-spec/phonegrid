@@ -1,0 +1,648 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Mobile OSGB36(15) Grid → DXF</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+          crossorigin=""></script>
+
+  <!-- Geocoder -->
+  <link rel="stylesheet"
+        href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css"/>
+  <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+
+  <!-- Proj4 + GeoTIFF -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.19.0/proj4.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/geotiff"></script>
+
+  <style>
+    :root { --pad: 12px; --radius: 16px; }
+    html, body { height: 100%; margin: 0; background: #0b0f19; }
+    #map { height: 100%; width: 100%; }
+
+    /* --- Draggable bottom sheet --- */
+    .sheet {
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      z-index: 9999;
+      background: rgba(255,255,255,0.96);
+      border-top-left-radius: var(--radius);
+      border-top-right-radius: var(--radius);
+      box-shadow: 0 -12px 24px rgba(0,0,0,0.25);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+
+      height: 78vh;                 /* max open height */
+      transform: translateY(44vh);  /* start half-open */
+      transition: transform 180ms ease;
+      will-change: transform;
+
+      padding: var(--pad);
+      padding-bottom: calc(var(--pad) + env(safe-area-inset-bottom));
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .handle {
+      width: 54px;
+      height: 6px;
+      background: #d1d5db;
+      border-radius: 999px;
+      margin: 6px auto 12px auto;
+      touch-action: none;
+    }
+
+    .sheet.is-collapsed {
+      overflow: hidden;
+    }
+    .sheet.is-collapsed .mini,
+    .sheet.is-collapsed .status {
+      display: none;
+    }
+
+    .toprow {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .title { font-weight: 900; font-size: 16px; }
+    .badge {
+      font-size: 12px;
+      background: #e5e7eb;
+      padding: 4px 10px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .field {
+      background: #f3f4f6;
+      border-radius: 14px;
+      padding: 10px;
+    }
+    .field label {
+      display: block;
+      font-size: 12px;
+      color: #374151;
+      margin-bottom: 6px;
+    }
+    .field input[type="number"], .field input[type="text"] {
+      width: 100%;
+      font-size: 16px;
+      padding: 10px;
+      border-radius: 12px;
+      border: 1px solid #d1d5db;
+      outline: none;
+      box-sizing: border-box;
+      background: white;
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-top: 10px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 12px 12px;
+      font-size: 15px;
+      font-weight: 800;
+      border: 0;
+      border-radius: 14px;
+      background: #111827;
+      color: white;
+      touch-action: manipulation;
+    }
+    .btn.secondary { background: #4b5563; }
+    .btn.danger { background: #991b1b; }
+    .btn:disabled { opacity: 0.55; }
+
+    .status {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #111827;
+      background: #eef2ff;
+      border: 1px solid #c7d2fe;
+      padding: 10px;
+      border-radius: 14px;
+    }
+
+    .mini {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #374151;
+      line-height: 1.35;
+    }
+
+    /* Crosshair overlay (optional) */
+    .crosshair {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      width: 36px;
+      height: 36px;
+      transform: translate(-50%, -50%);
+      z-index: 6000;
+      pointer-events: none;
+      display: none;
+    }
+    .crosshair:before, .crosshair:after {
+      content: "";
+      position: absolute;
+      background: rgba(255,255,255,0.9);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+    }
+    .crosshair:before { /* vertical */
+      left: 50%; top: 0; width: 2px; height: 100%;
+      transform: translateX(-50%);
+    }
+    .crosshair:after { /* horizontal */
+      top: 50%; left: 0; height: 2px; width: 100%;
+      transform: translateY(-50%);
+    }
+    .crosshair .dot {
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 10px; height: 10px;
+      border-radius: 999px;
+      transform: translate(-50%, -50%);
+      background: rgba(255,255,255,0.95);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+    }
+
+    .toggle {
+      display: flex; align-items: center; justify-content: space-between;
+      background: #f3f4f6;
+      border-radius: 14px;
+      padding: 10px;
+      margin-top: 10px;
+      gap: 12px;
+    }
+    .toggle span { font-size: 13px; color: #111827; font-weight: 700; }
+    .toggle input { transform: scale(1.3); }
+
+    /* make leaflet controls bigger on mobile */
+    .leaflet-control-zoom a { width: 40px; height: 40px; line-height: 40px; font-size: 18px; }
+    .leaflet-control-geocoder { max-width: 70vw; }
+  </style>
+</head>
+
+<body>
+  <div id="map"></div>
+  <div class="crosshair" id="crosshair"><div class="dot"></div></div>
+
+  <div class="sheet" id="sheet">
+    <div class="handle" id="handle" aria-label="Drag to resize"></div>
+
+    <div class="toprow">
+      <div class="title">OSGB36(15) Grid → DXF</div>
+      <div class="badge" id="modeBadge">centre pick</div>
+    </div>
+
+    <div class="grid2">
+      <div class="field">
+        <label for="gridSize">Grid size (m) (square)</label>
+        <input id="gridSize" type="number" min="1" step="1" value="300" />
+      </div>
+      <div class="field">
+        <label for="gridSpacing">Line spacing (m)</label>
+        <input id="gridSpacing" type="number" min="0.1" step="0.1" value="10" />
+      </div>
+      <div class="field">
+        <label for="layerName">DXF layer</label>
+        <input id="layerName" type="text" value="GRID" />
+      </div>
+      <div class="field">
+        <label>Rotation (deg)</label>
+        <div style="font-size:16px;font-weight:900;" id="rotDeg">0.000</div>
+      </div>
+    </div>
+
+    <div class="toggle">
+      <span>Use crosshair to pick points</span>
+      <input id="useCrosshair" type="checkbox" />
+    </div>
+
+    <div class="toggle">
+      <span>Export relative to centre</span>
+      <input id="relativeExport" type="checkbox" />
+    </div>
+
+    <div class="row">
+      <button class="btn" id="pickCentreBtn">Pick centre</button>
+      <button class="btn secondary" id="pickRotateBtn">Pick rotation</button>
+    </div>
+
+    <div class="row">
+      <button class="btn secondary" id="resetBtn">Reset</button>
+      <button class="btn" id="exportBtn" disabled>Export DXF</button>
+    </div>
+
+    <div class="status" id="statusBox">Loading OSTN15 grid…</div>
+    <div class="mini">
+      Tip: Use search (top-right). With crosshair mode on, pan the map then tap “Pick centre” again to set it at the crosshair.
+    </div>
+  </div>
+
+<script>
+  // ---------------------------
+  // Map setup (Satellite)
+  // ---------------------------
+  const map = L.map('map', { zoomControl: true }).setView([52.2, 0.9], 13);
+
+  L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 20, attribution: 'Tiles © Esri' }
+  ).addTo(map);
+
+  L.Control.geocoder({ defaultMarkGeocode: true }).addTo(map);
+
+  // ---------------------------
+  // OSGB36(15) / OSTN15
+  // ---------------------------
+  const statusBox = document.getElementById('statusBox');
+  const exportBtn = document.getElementById('exportBtn');
+
+  const OSTN15_TIFF_URL = 'https://cdn.proj.org/uk_os_OSTN15_NTv2_OSGBtoETRS.tif';
+  const EPSG27700_DEF_BASE =
+    '+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 ' +
+    '+x_0=400000 +y_0=-100000 +ellps=airy +units=m +no_defs +type=crs';
+
+  proj4.defs('EPSG:4326', '+proj=longlat +datum=WGS84 +no_defs +type=crs');
+
+  let ostnReady = false;
+
+  async function loadOSTN15() {
+    try {
+      statusBox.textContent = 'Loading OSTN15 grid (needs internet)…';
+      const tiff = await GeoTIFF.fromUrl(OSTN15_TIFF_URL);
+      await proj4.nadgrid('OSTN15_NTv2_OSGBtoETRS', tiff).ready;
+
+      proj4.defs('EPSG:27700', EPSG27700_DEF_BASE + ' +nadgrids=OSTN15_NTv2_OSGBtoETRS');
+      ostnReady = true;
+      statusBox.textContent = 'OSTN15 loaded ✅ (OSGB36(15) accurate)';
+      exportBtn.disabled = false;
+      redrawGrid();
+    } catch (e) {
+      console.error(e);
+      statusBox.textContent =
+        'OSTN15 failed to load ⚠️ Using rough fallback (not survey-grade). Host the file (GitHub Pages/Netlify) for best results.';
+      proj4.defs(
+        'EPSG:27700',
+        '+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 ' +
+        '+x_0=400000 +y_0=-100000 +ellps=airy ' +
+        '+towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489 ' +
+        '+units=m +no_defs +type=crs'
+      );
+      ostnReady = false;
+      exportBtn.disabled = false;
+      redrawGrid();
+    }
+  }
+  loadOSTN15();
+
+  // ---------------------------
+  // State
+  // ---------------------------
+  let mode = 'centre'; // 'centre' | 'rotate'
+  let centreLatLng = null;
+
+  let rotatePt1 = null;
+  let rotatePt2 = null;
+  let rotationRad = 0;
+
+  let centreMarker = null;
+  let rotateMarkers = [];
+  let gridLayer = L.layerGroup().addTo(map);
+
+  const modeBadge = document.getElementById('modeBadge');
+  const rotDegEl = document.getElementById('rotDeg');
+
+  const gridSizeEl = document.getElementById('gridSize');
+  const gridSpacingEl = document.getElementById('gridSpacing');
+  const layerNameEl = document.getElementById('layerName');
+  const relativeExportEl = document.getElementById('relativeExport');
+
+  const useCrosshairEl = document.getElementById('useCrosshair');
+  const crosshairEl = document.getElementById('crosshair');
+
+  function setMode(m) {
+    mode = m;
+    modeBadge.textContent = (m === 'centre') ? 'centre pick' : 'rotation pick';
+  }
+
+  function updateRotationDisplay() {
+    rotDegEl.textContent = (rotationRad * 180 / Math.PI).toFixed(3);
+  }
+
+  function crosshairLatLng() {
+    return map.getCenter();
+  }
+
+  // ---------------------------
+  // Transforms
+  // ---------------------------
+  function latLngToEN(latlng) {
+    const out = proj4('EPSG:4326', 'EPSG:27700', [latlng.lng, latlng.lat]);
+    return { e: out[0], n: out[1] };
+  }
+  function enToLatLng(e, n) {
+    const out = proj4('EPSG:27700', 'EPSG:4326', [e, n]);
+    return L.latLng(out[1], out[0]);
+  }
+
+  function rotateAboutEN(e, n, ce, cn, ang) {
+    const de = e - ce, dn = n - cn;
+    const c = Math.cos(ang), s = Math.sin(ang);
+    return { e: ce + de * c - dn * s, n: cn + de * s + dn * c };
+  }
+
+  function buildGridLinesEN(centreEN, sizeM, spacingM, angRad) {
+    const half = sizeM / 2;
+    const nSteps = Math.max(1, Math.round(sizeM / spacingM));
+    const step = sizeM / nSteps;
+    const lines = [];
+
+    for (let i = 0; i <= nSteps; i++) {
+      const off = -half + i * step;
+
+      // vertical
+      let e1 = centreEN.e + off, n1 = centreEN.n - half;
+      let e2 = centreEN.e + off, n2 = centreEN.n + half;
+
+      // horizontal
+      let e3 = centreEN.e - half, n3 = centreEN.n + off;
+      let e4 = centreEN.e + half, n4 = centreEN.n + off;
+
+      const v1 = rotateAboutEN(e1, n1, centreEN.e, centreEN.n, angRad);
+      const v2 = rotateAboutEN(e2, n2, centreEN.e, centreEN.n, angRad);
+      const h1 = rotateAboutEN(e3, n3, centreEN.e, centreEN.n, angRad);
+      const h2 = rotateAboutEN(e4, n4, centreEN.e, centreEN.n, angRad);
+
+      lines.push({ e1: v1.e, n1: v1.n, e2: v2.e, n2: v2.n });
+      lines.push({ e1: h1.e, n1: h1.n, e2: h2.e, n2: h2.n });
+    }
+    return lines;
+  }
+
+  function redrawGrid() {
+    gridLayer.clearLayers();
+    if (!centreLatLng) return;
+
+    const sizeM = parseFloat(gridSizeEl.value);
+    const spacingM = parseFloat(gridSpacingEl.value);
+    if (!(sizeM > 0) || !(spacingM > 0)) return;
+
+    const centreEN = latLngToEN(centreLatLng);
+    const linesEN = buildGridLinesEN(centreEN, sizeM, spacingM, rotationRad);
+
+    for (const ln of linesEN) {
+      const a = enToLatLng(ln.e1, ln.n1);
+      const b = enToLatLng(ln.e2, ln.n2);
+      L.polyline([a, b], { weight: 2, opacity: 0.85 }).addTo(gridLayer);
+    }
+  }
+
+  // ---------------------------
+  // DXF export
+  // ---------------------------
+  function dxfLineEntity(x1, y1, x2, y2, layer) {
+    return [
+      "0","LINE",
+      "8", layer,
+      "10", x1.toFixed(3),
+      "20", y1.toFixed(3),
+      "30", "0.000",
+      "11", x2.toFixed(3),
+      "21", y2.toFixed(3),
+      "31", "0.000"
+    ].join("\n") + "\n";
+  }
+
+  function exportDXF() {
+    if (!centreLatLng) { alert("Pick a centre point first."); return; }
+
+    const sizeM = parseFloat(gridSizeEl.value);
+    const spacingM = parseFloat(gridSpacingEl.value);
+    const layer = (layerNameEl.value || "GRID").trim();
+    const rel = !!relativeExportEl.checked;
+
+    if (!(sizeM > 0) || !(spacingM > 0)) { alert("Size and spacing must be > 0."); return; }
+
+    const centreEN = latLngToEN(centreLatLng);
+    const linesAbs = buildGridLinesEN(centreEN, sizeM, spacingM, rotationRad);
+
+    const lines = linesAbs.map(l => rel ? ({
+      x1: l.e1 - centreEN.e, y1: l.n1 - centreEN.n,
+      x2: l.e2 - centreEN.e, y2: l.n2 - centreEN.n
+    }) : ({
+      x1: l.e1, y1: l.n1,
+      x2: l.e2, y2: l.n2
+    }));
+
+    let dxf = "";
+    dxf += "0\nSECTION\n2\nHEADER\n";
+    dxf += "9\n$INSUNITS\n70\n6\n"; // meters
+    dxf += "0\nENDSEC\n";
+    dxf += "0\nSECTION\n2\nENTITIES\n";
+    for (const ln of lines) dxf += dxfLineEntity(ln.x1, ln.y1, ln.x2, ln.y2, layer);
+    dxf += "0\nENDSEC\n0\nEOF\n";
+
+    const blob = new Blob([dxf], { type: "application/dxf" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    const deg = (rotationRad * 180 / Math.PI).toFixed(1);
+    a.download = `grid_${rel ? "REL" : "OSGB"}_${sizeM}m_${spacingM}m_${deg}deg.dxf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  // ---------------------------
+  // Picking logic (tap-friendly)
+  // If crosshair is ON, pick from map center.
+  // Else, pick from tap location.
+  // ---------------------------
+  function getPickLatLng(tapLatLng) {
+    return useCrosshairEl.checked ? crosshairLatLng() : tapLatLng;
+  }
+
+  map.on('click', (e) => {
+    const picked = getPickLatLng(e.latlng);
+
+    if (mode === 'centre') {
+      centreLatLng = picked;
+
+      if (centreMarker) centreMarker.remove();
+      centreMarker = L.marker(centreLatLng, { draggable: true }).addTo(map);
+      centreMarker.on('drag', () => {
+        centreLatLng = centreMarker.getLatLng();
+        redrawGrid();
+      });
+
+      redrawGrid();
+      return;
+    }
+
+    if (mode === 'rotate') {
+      if (!rotatePt1) {
+        rotatePt1 = picked;
+        const m1 = L.circleMarker(rotatePt1, { radius: 8, weight: 2 }).addTo(map);
+        rotateMarkers.push(m1);
+        return;
+      }
+      if (!rotatePt2) {
+        rotatePt2 = picked;
+        const m2 = L.circleMarker(rotatePt2, { radius: 8, weight: 2 }).addTo(map);
+        rotateMarkers.push(m2);
+
+        const p1 = latLngToEN(rotatePt1);
+        const p2 = latLngToEN(rotatePt2);
+        rotationRad = Math.atan2(p2.n - p1.n, p2.e - p1.e);
+
+        updateRotationDisplay();
+        redrawGrid();
+
+        rotatePt1 = null;
+        rotatePt2 = null;
+      }
+    }
+  });
+
+  // Buttons
+  document.getElementById('pickCentreBtn').addEventListener('click', () => {
+    setMode('centre');
+    if (useCrosshairEl.checked) {
+      centreLatLng = crosshairLatLng();
+      if (centreMarker) centreMarker.remove();
+      centreMarker = L.marker(centreLatLng, { draggable: true }).addTo(map);
+      centreMarker.on('drag', () => { centreLatLng = centreMarker.getLatLng(); redrawGrid(); });
+      redrawGrid();
+    }
+  });
+
+  document.getElementById('pickRotateBtn').addEventListener('click', () => {
+    setMode('rotate');
+    rotatePt1 = null;
+    rotatePt2 = null;
+  });
+
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    centreLatLng = null;
+    rotationRad = 0;
+    updateRotationDisplay();
+
+    if (centreMarker) { centreMarker.remove(); centreMarker = null; }
+    rotateMarkers.forEach(m => m.remove());
+    rotateMarkers = [];
+    rotatePt1 = null; rotatePt2 = null;
+
+    gridLayer.clearLayers();
+    setMode('centre');
+  });
+
+  exportBtn.addEventListener('click', exportDXF);
+
+  gridSizeEl.addEventListener('input', redrawGrid);
+  gridSpacingEl.addEventListener('input', redrawGrid);
+
+  useCrosshairEl.addEventListener('change', () => {
+    crosshairEl.style.display = useCrosshairEl.checked ? 'block' : 'none';
+  });
+
+  // ---------------------------
+  // Draggable bottom sheet (3 snap positions)
+  // ---------------------------
+  const sheet = document.getElementById('sheet');
+  const handle = document.getElementById('handle');
+
+  // translateY in vh (bigger = more hidden)
+  const snaps = {
+    open: 6,
+    half: 44,
+    closed: 66
+  };
+
+  let currentSnap = 'half';
+  setSheetSnap(currentSnap);
+
+  function setSheetSnap(which) {
+    currentSnap = which;
+    sheet.style.transform = `translateY(${snaps[which]}vh)`;
+    sheet.classList.toggle('is-collapsed', which === 'closed');
+  }
+
+  // tap handle toggles half/closed
+  handle.addEventListener('click', () => {
+    setSheetSnap(currentSnap === 'closed' ? 'half' : 'closed');
+  });
+
+  let dragging = false;
+  let startY = 0;
+  let startTranslateVh = snaps[currentSnap];
+
+  function getTranslateVhFromStyle() {
+    const m = sheet.style.transform.match(/translateY\(([-0-9.]+)vh\)/);
+    return m ? parseFloat(m[1]) : snaps.half;
+  }
+
+  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+  handle.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    handle.setPointerCapture(e.pointerId);
+    sheet.style.transition = 'none';
+    startY = e.clientY;
+    startTranslateVh = getTranslateVhFromStyle();
+  });
+
+  handle.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+
+    const dyPx = e.clientY - startY;
+    const vhPx = window.innerHeight / 100;
+    const dyVh = dyPx / vhPx;
+
+    let next = startTranslateVh + dyVh;
+    next = clamp(next, 0, 72);
+    sheet.style.transform = `translateY(${next}vh)`;
+  });
+
+  handle.addEventListener('pointerup', () => {
+    if (!dragging) return;
+    dragging = false;
+    sheet.style.transition = 'transform 180ms ease';
+
+    const now = getTranslateVhFromStyle();
+    const options = Object.entries(snaps);
+    let best = options[0];
+    for (const opt of options) {
+      if (Math.abs(opt[1] - now) < Math.abs(best[1] - now)) best = opt;
+    }
+    setSheetSnap(best[0]);
+  });
+
+  updateRotationDisplay();
+</script>
+</body>
+</html>
