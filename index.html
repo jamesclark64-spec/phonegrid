@@ -59,9 +59,13 @@
       touch-action: none;
     }
 
-    .sheet.is-collapsed { overflow: hidden; }
+    .sheet.is-collapsed {
+      overflow: hidden;
+    }
     .sheet.is-collapsed .mini,
-    .sheet.is-collapsed .status { display: none; }
+    .sheet.is-collapsed .status {
+      display: none;
+    }
 
     .toprow {
       display: flex;
@@ -113,12 +117,10 @@
       gap: 10px;
       align-items: center;
       margin-top: 10px;
-      flex-wrap: wrap;
     }
 
     .btn {
       flex: 1;
-      min-width: 140px;
       padding: 12px 12px;
       font-size: 15px;
       font-weight: 800;
@@ -167,8 +169,14 @@
       background: rgba(255,255,255,0.9);
       box-shadow: 0 1px 4px rgba(0,0,0,0.35);
     }
-    .crosshair:before { left: 50%; top: 0; width: 2px; height: 100%; transform: translateX(-50%); }
-    .crosshair:after { top: 50%; left: 0; height: 2px; width: 100%; transform: translateY(-50%); }
+    .crosshair:before { /* vertical */
+      left: 50%; top: 0; width: 2px; height: 100%;
+      transform: translateX(-50%);
+    }
+    .crosshair:after { /* horizontal */
+      top: 50%; left: 0; height: 2px; width: 100%;
+      transform: translateY(-50%);
+    }
     .crosshair .dot {
       position: absolute;
       left: 50%; top: 50%;
@@ -238,15 +246,8 @@
     </div>
 
     <div class="row">
-      <button class="btn" id="gpsBtn">Locate (GPS)</button>
-      <button class="btn secondary" id="pickCentreBtn">Pick centre</button>
+      <button class="btn" id="pickCentreBtn">Pick centre</button>
       <button class="btn secondary" id="pickRotateBtn">Pick rotation</button>
-    </div>
-
-    <div class="row">
-      <button class="btn" id="boundaryBtn">Add boundary</button>
-      <button class="btn secondary" id="finishBoundaryBtn" disabled>Finish boundary</button>
-      <button class="btn danger" id="clearBoundaryBtn" disabled>Clear boundary</button>
     </div>
 
     <div class="row">
@@ -256,8 +257,7 @@
 
     <div class="status" id="statusBox">Loading OSTN15 grid…</div>
     <div class="mini">
-      Tip: Use search (top-right). With crosshair mode on, pan the map then tap “Pick centre” again to set it at the crosshair.<br/>
-      Boundary: tap “Add boundary”, then tap points on the map; “Finish boundary” stops drawing. Boundary exports on layer <b>BOUNDARY</b> in red.
+      Tip: Use search (top-right). With crosshair mode on, pan the map then tap “Pick centre” again to set it at the crosshair.
     </div>
   </div>
 
@@ -300,7 +300,6 @@
       statusBox.textContent = 'OSTN15 loaded ✅ (OSGB36(15) accurate)';
       exportBtn.disabled = false;
       redrawGrid();
-      redrawBoundary();
     } catch (e) {
       console.error(e);
       statusBox.textContent =
@@ -315,7 +314,6 @@
       ostnReady = false;
       exportBtn.disabled = false;
       redrawGrid();
-      redrawBoundary();
     }
   }
   loadOSTN15();
@@ -323,7 +321,7 @@
   // ---------------------------
   // State
   // ---------------------------
-  let mode = 'centre'; // 'centre' | 'rotate' | 'boundary'
+  let mode = 'centre'; // 'centre' | 'rotate'
   let centreLatLng = null;
 
   let rotatePt1 = null;
@@ -332,16 +330,7 @@
 
   let centreMarker = null;
   let rotateMarkers = [];
-  let gpsMarker = null;
-
   let gridLayer = L.layerGroup().addTo(map);
-
-  // Boundary state
-  const BOUNDARY_LAYER_NAME = "BOUNDARY";
-  const BOUNDARY_DXF_COLOR_INDEX = 1; // red (ACI 1)
-  let boundaryPts = [];               // array of LatLng
-  let boundaryLine = null;            // leaflet polyline
-  let boundaryVertexMarkers = [];     // markers for vertices
 
   const modeBadge = document.getElementById('modeBadge');
   const rotDegEl = document.getElementById('rotDeg');
@@ -354,15 +343,9 @@
   const useCrosshairEl = document.getElementById('useCrosshair');
   const crosshairEl = document.getElementById('crosshair');
 
-  const boundaryBtn = document.getElementById('boundaryBtn');
-  const finishBoundaryBtn = document.getElementById('finishBoundaryBtn');
-  const clearBoundaryBtn = document.getElementById('clearBoundaryBtn');
-
   function setMode(m) {
     mode = m;
-    if (m === 'centre') modeBadge.textContent = 'centre pick';
-    else if (m === 'rotate') modeBadge.textContent = 'rotation pick';
-    else modeBadge.textContent = 'boundary draw';
+    modeBadge.textContent = (m === 'centre') ? 'centre pick' : 'rotation pick';
   }
 
   function updateRotationDisplay() {
@@ -437,23 +420,6 @@
     }
   }
 
-  function redrawBoundary() {
-    // remove old line + markers
-    if (boundaryLine) { boundaryLine.remove(); boundaryLine = null; }
-    boundaryVertexMarkers.forEach(m => m.remove());
-    boundaryVertexMarkers = [];
-
-    if (boundaryPts.length === 0) return;
-
-    boundaryLine = L.polyline(boundaryPts, { weight: 3, opacity: 0.95 }).addTo(map);
-
-    // vertex markers
-    for (const p of boundaryPts) {
-      const mk = L.circleMarker(p, { radius: 6, weight: 2, opacity: 1 }).addTo(map);
-      boundaryVertexMarkers.push(mk);
-    }
-  }
-
   // ---------------------------
   // DXF export
   // ---------------------------
@@ -468,26 +434,6 @@
       "21", y2.toFixed(3),
       "31", "0.000"
     ].join("\n") + "\n";
-  }
-
-  // LWPOLYLINE (2D) with optional ACI color
-  function dxfLWPolylineEntity(pointsXY, layer, colorIndex /* optional */) {
-    if (!pointsXY || pointsXY.length < 2) return "";
-    const parts = [
-      "0","LWPOLYLINE",
-      "8", layer
-    ];
-    if (Number.isFinite(colorIndex)) {
-      parts.push("62", String(colorIndex)); // ACI color index (1=red)
-    }
-    parts.push("90", String(pointsXY.length)); // vertex count
-    parts.push("70", "0"); // open polyline (set to 1 for closed)
-
-    for (const pt of pointsXY) {
-      parts.push("10", pt.x.toFixed(3));
-      parts.push("20", pt.y.toFixed(3));
-    }
-    return parts.join("\n") + "\n";
   }
 
   function exportDXF() {
@@ -511,31 +457,12 @@
       x2: l.e2, y2: l.n2
     }));
 
-    // boundary points (if any)
-    let boundaryXY = [];
-    if (boundaryPts.length >= 2) {
-      boundaryXY = boundaryPts.map(ll => {
-        const en = latLngToEN(ll);
-        return rel
-          ? { x: en.e - centreEN.e, y: en.n - centreEN.n }
-          : { x: en.e, y: en.n };
-      });
-    }
-
     let dxf = "";
     dxf += "0\nSECTION\n2\nHEADER\n";
     dxf += "9\n$INSUNITS\n70\n6\n"; // meters
     dxf += "0\nENDSEC\n";
     dxf += "0\nSECTION\n2\nENTITIES\n";
-
-    // grid lines
     for (const ln of lines) dxf += dxfLineEntity(ln.x1, ln.y1, ln.x2, ln.y2, layer);
-
-    // boundary polyline (layer BOUNDARY, red)
-    if (boundaryXY.length >= 2) {
-      dxf += dxfLWPolylineEntity(boundaryXY, BOUNDARY_LAYER_NAME, BOUNDARY_DXF_COLOR_INDEX);
-    }
-
     dxf += "0\nENDSEC\n0\nEOF\n";
 
     const blob = new Blob([dxf], { type: "application/dxf" });
@@ -599,54 +526,10 @@
         rotatePt1 = null;
         rotatePt2 = null;
       }
-      return;
-    }
-
-    // Boundary draw mode
-    if (mode === 'boundary') {
-      boundaryPts.push(picked);
-      redrawBoundary();
-      finishBoundaryBtn.disabled = boundaryPts.length < 2;
-      clearBoundaryBtn.disabled = boundaryPts.length === 0;
-      return;
     }
   });
 
-  // ---------------------------
   // Buttons
-  // ---------------------------
-
-  // GPS locate
-  document.getElementById('gpsBtn').addEventListener('click', () => {
-    if (!navigator.geolocation) {
-      alert("Geolocation not supported on this device/browser.");
-      return;
-    }
-
-    statusBox.textContent = "Requesting GPS location… (needs HTTPS + permission)";
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
-        const acc = pos.coords.accuracy;
-
-        const ll = L.latLng(lat, lng);
-        map.setView(ll, 18);
-
-        if (gpsMarker) gpsMarker.remove();
-        gpsMarker = L.circle(ll, { radius: Math.max(3, acc || 10), weight: 2 }).addTo(map);
-
-        statusBox.textContent = `GPS located ✅ accuracy ~${Math.round(acc)}m.`;
-      },
-      (err) => {
-        console.warn(err);
-        statusBox.textContent = "GPS failed ⚠️ Make sure you’re on HTTPS and allow location permission.";
-        alert("GPS failed. If you’re on GitHub Pages make sure it’s https:// and allow location permission.");
-      },
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 5000 }
-    );
-  });
-
   document.getElementById('pickCentreBtn').addEventListener('click', () => {
     setMode('centre');
     if (useCrosshairEl.checked) {
@@ -664,36 +547,6 @@
     rotatePt2 = null;
   });
 
-  // Boundary: start/stop
-  boundaryBtn.addEventListener('click', () => {
-    // toggle
-    if (mode === 'boundary') {
-      setMode('centre');
-      boundaryBtn.textContent = "Add boundary";
-      statusBox.textContent = "Boundary drawing paused.";
-      return;
-    }
-
-    setMode('boundary');
-    boundaryBtn.textContent = "Stop boundary";
-    statusBox.textContent = "Boundary mode: tap points to add vertices. Press “Finish boundary” when done.";
-  });
-
-  finishBoundaryBtn.addEventListener('click', () => {
-    if (boundaryPts.length < 2) return;
-    setMode('centre');
-    boundaryBtn.textContent = "Add boundary";
-    statusBox.textContent = `Boundary finished ✅ (${boundaryPts.length} vertices).`;
-  });
-
-  clearBoundaryBtn.addEventListener('click', () => {
-    boundaryPts = [];
-    redrawBoundary();
-    finishBoundaryBtn.disabled = true;
-    clearBoundaryBtn.disabled = true;
-    statusBox.textContent = "Boundary cleared.";
-  });
-
   document.getElementById('resetBtn').addEventListener('click', () => {
     centreLatLng = null;
     rotationRad = 0;
@@ -704,16 +557,8 @@
     rotateMarkers = [];
     rotatePt1 = null; rotatePt2 = null;
 
-    // boundary reset
-    boundaryPts = [];
-    redrawBoundary();
-    finishBoundaryBtn.disabled = true;
-    clearBoundaryBtn.disabled = true;
-    boundaryBtn.textContent = "Add boundary";
-
     gridLayer.clearLayers();
     setMode('centre');
-    statusBox.textContent = ostnReady ? "Reset ✅" : "Reset ✅ (fallback transform)";
   });
 
   exportBtn.addEventListener('click', exportDXF);
@@ -725,13 +570,6 @@
     crosshairEl.style.display = useCrosshairEl.checked ? 'block' : 'none';
   });
 
-  // Enable/disable boundary buttons based on points
-  function refreshBoundaryButtons() {
-    finishBoundaryBtn.disabled = boundaryPts.length < 2;
-    clearBoundaryBtn.disabled = boundaryPts.length === 0;
-  }
-  refreshBoundaryButtons();
-
   // ---------------------------
   // Draggable bottom sheet (3 snap positions)
   // ---------------------------
@@ -739,7 +577,11 @@
   const handle = document.getElementById('handle');
 
   // translateY in vh (bigger = more hidden)
-  const snaps = { open: 6, half: 44, closed: 66 };
+  const snaps = {
+    open: 6,
+    half: 44,
+    closed: 66
+  };
 
   let currentSnap = 'half';
   setSheetSnap(currentSnap);
