@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <title>Mobile OSGB36(15) Grid → DXF</title>
+  <title>OSGB36(15) Grid → DXF</title>
 
   <!-- Leaflet -->
   <link rel="stylesheet"
@@ -42,8 +42,8 @@
       box-shadow: 0 -12px 24px rgba(0,0,0,0.25);
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
 
-      height: 78vh;                 /* max open height */
-      transform: translateY(44vh);  /* start half-open */
+      height: 78vh;
+      transform: translateY(44vh);
       transition: transform 180ms ease;
       will-change: transform;
 
@@ -134,7 +134,6 @@
       touch-action: manipulation;
     }
     .btn.secondary { background: #4b5563; }
-    .btn.danger { background: #991b1b; }
     .btn:disabled { opacity: 0.55; }
 
     .status {
@@ -198,6 +197,33 @@
     /* make leaflet controls bigger on mobile */
     .leaflet-control-zoom a { width: 40px; height: 40px; line-height: 40px; font-size: 18px; }
     .leaflet-control-geocoder { max-width: 70vw; }
+
+    /* Grip icons */
+    .grip {
+      width: 16px; height: 16px;
+      border-radius: 4px;
+      border: 2px solid #111827;
+      background: rgba(255,255,255,0.95);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+    }
+    .rotgrip {
+      width: 18px; height: 18px;
+      border-radius: 999px;
+      border: 2px solid #111827;
+      background: rgba(255,255,255,0.95);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+      position: relative;
+    }
+    .rotgrip:after{
+      content:"";
+      position:absolute;
+      left:50%; top:50%;
+      width: 6px; height: 6px;
+      transform: translate(-50%,-50%);
+      border-radius: 999px;
+      background:#111827;
+      opacity:0.9;
+    }
   </style>
 </head>
 
@@ -213,7 +239,7 @@
       <div class="badge" id="modeBadge">centre pick</div>
     </div>
 
-    <!-- ACTIONS FIRST (top) -->
+    <!-- ACTIONS FIRST -->
     <div class="row">
       <button class="btn" id="pickCentreBtn">Pick centre</button>
       <button class="btn secondary" id="pickRotateBtn">Pick rotation</button>
@@ -228,7 +254,7 @@
       <button class="btn secondary" id="resetBtn">Reset</button>
     </div>
 
-    <!-- OPTIONS NEXT -->
+    <!-- OPTIONS -->
     <div class="toggle">
       <span>Use crosshair to pick points</span>
       <input id="useCrosshair" type="checkbox" />
@@ -237,6 +263,11 @@
     <div class="toggle">
       <span>Export relative to centre</span>
       <input id="relativeExport" type="checkbox" />
+    </div>
+
+    <div class="toggle">
+      <span>Auto align to true north</span>
+      <input id="autoNorth" type="checkbox" checked />
     </div>
 
     <!-- GRID SETTINGS LOWER DOWN -->
@@ -261,7 +292,7 @@
 
     <div class="status" id="statusBox">Loading OSTN15 grid…</div>
     <div class="mini">
-      Tip: Use search (top-right). With crosshair mode on, pan the map then tap “Pick centre” again to set it at the crosshair.
+      Grips: drag corners to resize, drag the round grip above to rotate.
     </div>
   </div>
 
@@ -276,11 +307,10 @@
     { maxZoom: 20, attribution: 'Tiles © Esri' }
   ).addTo(map);
 
-  // Better geocoder behavior (fits bounds reliably)
+  // geocoder: fit bounds reliably
   const geocodeControl = L.Control.geocoder({ defaultMarkGeocode: false }).addTo(map);
   geocodeControl.on('markgeocode', function(e) {
-    const bbox = e.geocode.bbox;
-    map.fitBounds(bbox);
+    map.fitBounds(e.geocode.bbox);
   });
 
   // ---------------------------
@@ -308,11 +338,16 @@
       ostnReady = true;
       statusBox.textContent = 'OSTN15 loaded ✅ (OSGB36(15) accurate)';
       exportBtn.disabled = false;
+      // after proj ready, if we already have a centre, re-align north once
+      if (centreLatLng && autoNorthEl.checked && !userRotated) {
+        rotationRad = trueNorthRotationRad(centreLatLng);
+        updateRotationDisplay();
+      }
       redrawGrid();
     } catch (e) {
       console.error(e);
       statusBox.textContent =
-        'OSTN15 failed to load ⚠️ Using rough fallback (not survey-grade). Host the file (GitHub Pages/Netlify) for best results.';
+        'OSTN15 failed to load ⚠️ Using rough fallback (not survey-grade). Host on GitHub Pages for best results.';
       proj4.defs(
         'EPSG:27700',
         '+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 ' +
@@ -322,6 +357,10 @@
       );
       ostnReady = false;
       exportBtn.disabled = false;
+      if (centreLatLng && autoNorthEl.checked && !userRotated) {
+        rotationRad = trueNorthRotationRad(centreLatLng);
+        updateRotationDisplay();
+      }
       redrawGrid();
     }
   }
@@ -337,9 +376,13 @@
   let rotatePt2 = null;
   let rotationRad = 0;
 
+  // If user sets rotation (pick rotation or rotation grip), we stop auto-northing.
+  let userRotated = false;
+
   let centreMarker = null;
   let rotateMarkers = [];
   let gridLayer = L.layerGroup().addTo(map);
+  let gripLayer = L.layerGroup().addTo(map);
 
   const modeBadge = document.getElementById('modeBadge');
   const rotDegEl = document.getElementById('rotDeg');
@@ -351,6 +394,7 @@
 
   const useCrosshairEl = document.getElementById('useCrosshair');
   const crosshairEl = document.getElementById('crosshair');
+  const autoNorthEl = document.getElementById('autoNorth');
 
   function setMode(m) {
     mode = m;
@@ -383,6 +427,22 @@
     return { e: ce + de * c - dn * s, n: cn + de * s + dn * c };
   }
 
+  // True-north alignment:
+  // In EN space, true north isn't always exactly +N (grid convergence).
+  // We compute direction of "lat + tiny" in EN, then rotate so grid's +N matches that.
+  function trueNorthRotationRad(latlng) {
+    const dLat = 0.00015; // ~17m; enough to be stable
+    const p0 = latLngToEN(latlng);
+    const pN = latLngToEN(L.latLng(latlng.lat + dLat, latlng.lng));
+    const dE = pN.e - p0.e;
+    const dN = pN.n - p0.n;
+    const thetaFromEast = Math.atan2(dN, dE); // angle of true north direction, measured from +E
+    return thetaFromEast - (Math.PI / 2);     // rotate grid so its +N aligns to that direction
+  }
+
+  // ---------------------------
+  // Grid generation in EN
+  // ---------------------------
   function buildGridLinesEN(centreEN, sizeM, spacingM, angRad) {
     const half = sizeM / 2;
     const nSteps = Math.max(1, Math.round(sizeM / spacingM));
@@ -392,9 +452,11 @@
     for (let i = 0; i <= nSteps; i++) {
       const off = -half + i * step;
 
+      // vertical
       let e1 = centreEN.e + off, n1 = centreEN.n - half;
       let e2 = centreEN.e + off, n2 = centreEN.n + half;
 
+      // horizontal
       let e3 = centreEN.e - half, n3 = centreEN.n + off;
       let e4 = centreEN.e + half, n4 = centreEN.n + off;
 
@@ -409,13 +471,118 @@
     return lines;
   }
 
-  function redrawGrid() {
-    gridLayer.clearLayers();
+  // ---------------------------
+  // Grips: 4 corners resize, 1 rotate handle
+  // ---------------------------
+  function makeDivIcon(className) {
+    return L.divIcon({
+      className: '',
+      html: `<div class="${className}"></div>`,
+      iconSize: [18, 18],
+      iconAnchor: [9, 9]
+    });
+  }
+
+  let cornerGrips = [];  // 4 markers
+  let rotateGrip = null; // 1 marker
+
+  function clearGrips() {
+    gripLayer.clearLayers();
+    cornerGrips = [];
+    rotateGrip = null;
+  }
+
+  function setMapDrag(enabled) {
+    if (enabled) map.dragging.enable();
+    else map.dragging.disable();
+  }
+
+  function updateGrips() {
+    clearGrips();
     if (!centreLatLng) return;
 
     const sizeM = parseFloat(gridSizeEl.value);
+    if (!(sizeM > 0)) return;
+
+    const centreEN = latLngToEN(centreLatLng);
+    const half = sizeM / 2;
+
+    // local corners (unrotated) in EN offsets: (-half,-half) etc.
+    const localCorners = [
+      { x: -half, y: -half },
+      { x:  half, y: -half },
+      { x:  half, y:  half },
+      { x: -half, y:  half }
+    ];
+
+    const cornersEN = localCorners.map(c => {
+      const p = rotateAboutEN(centreEN.e + c.x, centreEN.n + c.y, centreEN.e, centreEN.n, rotationRad);
+      return { e: p.e, n: p.n };
+    });
+
+    // Corner grip drag => resize (keep square)
+    for (let i = 0; i < cornersEN.length; i++) {
+      const ll = enToLatLng(cornersEN[i].e, cornersEN[i].n);
+      const m = L.marker(ll, {
+        draggable: true,
+        icon: makeDivIcon('grip'),
+        keyboard: false
+      }).addTo(gripLayer);
+
+      m.on('dragstart', () => setMapDrag(false));
+      m.on('dragend', () => setMapDrag(true));
+
+      m.on('drag', () => {
+        const ll2 = m.getLatLng();
+        const p = latLngToEN(ll2);
+        const dist = Math.hypot(p.e - centreEN.e, p.n - centreEN.n);
+        const newHalf = dist / Math.SQRT2;
+        const newSize = Math.max(1, Math.round(newHalf * 2));
+        gridSizeEl.value = newSize;
+        redrawGrid(); // redraw updates grips too
+      });
+
+      cornerGrips.push(m);
+    }
+
+    // Rotation grip sits above the "top middle" of the square in local coords.
+    const rotRadius = half * 1.25;
+    const rotEN = rotateAboutEN(centreEN.e, centreEN.n + rotRadius, centreEN.e, centreEN.n, rotationRad);
+    const rotLL = enToLatLng(rotEN.e, rotEN.n);
+
+    rotateGrip = L.marker(rotLL, {
+      draggable: true,
+      icon: makeDivIcon('rotgrip'),
+      keyboard: false
+    }).addTo(gripLayer);
+
+    rotateGrip.on('dragstart', () => {
+      userRotated = true;
+      setMapDrag(false);
+    });
+    rotateGrip.on('dragend', () => setMapDrag(true));
+
+    rotateGrip.on('drag', () => {
+      const p = latLngToEN(rotateGrip.getLatLng());
+      const dE = p.e - centreEN.e;
+      const dN = p.n - centreEN.n;
+      const thetaFromEast = Math.atan2(dN, dE);
+      rotationRad = thetaFromEast - (Math.PI / 2);
+      updateRotationDisplay();
+      redrawGrid();
+    });
+  }
+
+  // ---------------------------
+  // Redraw grid + grips
+  // ---------------------------
+  function redrawGrid() {
+    gridLayer.clearLayers();
+    if (!centreLatLng) { clearGrips(); return; }
+
+    const sizeM = parseFloat(gridSizeEl.value);
     const spacingM = parseFloat(gridSpacingEl.value);
-    if (!(sizeM > 0) || !(spacingM > 0)) return;
+    if (!(sizeM > 0) || !(spacingM > 0)) { clearGrips(); return; }
 
     const centreEN = latLngToEN(centreLatLng);
     const linesEN = buildGridLinesEN(centreEN, sizeM, spacingM, rotationRad);
@@ -425,15 +592,21 @@
       const b = enToLatLng(ln.e2, ln.n2);
       L.polyline([a, b], { weight: 2, opacity: 0.85 }).addTo(gridLayer);
     }
+
+    updateGrips();
   }
 
   // ---------------------------
-  // DXF export
+  // DXF export (BLUE)
+  // AutoCAD ACI Blue = 5
   // ---------------------------
-  function dxfLineEntity(x1, y1, x2, y2, layer) {
+  const DXF_COLOR_BLUE = 5;
+
+  function dxfLineEntity(x1, y1, x2, y2, layer, aciColor) {
     return [
       "0","LINE",
       "8", layer,
+      "62", String(aciColor),   // entity color
       "10", x1.toFixed(3),
       "20", y1.toFixed(3),
       "30", "0.000",
@@ -469,7 +642,7 @@
     dxf += "9\n$INSUNITS\n70\n6\n"; // meters
     dxf += "0\nENDSEC\n";
     dxf += "0\nSECTION\n2\nENTITIES\n";
-    for (const ln of lines) dxf += dxfLineEntity(ln.x1, ln.y1, ln.x2, ln.y2, layer);
+    for (const ln of lines) dxf += dxfLineEntity(ln.x1, ln.y1, ln.x2, ln.y2, layer, DXF_COLOR_BLUE);
     dxf += "0\nENDSEC\n0\nEOF\n";
 
     const blob = new Blob([dxf], { type: "application/dxf" });
@@ -482,12 +655,12 @@
     a.target = "_blank";
 
     const deg = (rotationRad * 180 / Math.PI).toFixed(1);
-    a.download = `grid_${rel ? "REL" : "OSGB"}_${sizeM}m_${spacingM}m_${deg}deg.dxf`;
+    a.download = `grid_${rel ? "REL" : "OSGB"}_${sizeM}m_${spacingM}m_${deg}deg_BLUE.dxf`;
 
     document.body.appendChild(a);
     a.click();
 
-    // Fallback open (mobile browsers sometimes ignore download)
+    // fallback open (some mobile browsers ignore download)
     setTimeout(() => window.open(url, "_blank"), 250);
 
     a.remove();
@@ -501,24 +674,41 @@
     return useCrosshairEl.checked ? crosshairLatLng() : tapLatLng;
   }
 
+  function setCentre(latlng) {
+    centreLatLng = latlng;
+
+    if (centreMarker) centreMarker.remove();
+    centreMarker = L.marker(centreLatLng, { draggable: true }).addTo(map);
+    centreMarker.on('drag', () => {
+      centreLatLng = centreMarker.getLatLng();
+      if (autoNorthEl.checked && !userRotated) {
+        rotationRad = trueNorthRotationRad(centreLatLng);
+        updateRotationDisplay();
+      }
+      redrawGrid();
+    });
+
+    // Auto true-north align on new centre (unless user already rotated)
+    if (autoNorthEl.checked && !userRotated) {
+      rotationRad = trueNorthRotationRad(centreLatLng);
+      updateRotationDisplay();
+    }
+
+    redrawGrid();
+  }
+
   map.on('click', (e) => {
     const picked = getPickLatLng(e.latlng);
 
     if (mode === 'centre') {
-      centreLatLng = picked;
-
-      if (centreMarker) centreMarker.remove();
-      centreMarker = L.marker(centreLatLng, { draggable: true }).addTo(map);
-      centreMarker.on('drag', () => {
-        centreLatLng = centreMarker.getLatLng();
-        redrawGrid();
-      });
-
-      redrawGrid();
+      setCentre(picked);
       return;
     }
 
     if (mode === 'rotate') {
+      // user chooses rotation -> disable auto
+      userRotated = true;
+
       if (!rotatePt1) {
         rotatePt1 = picked;
         const m1 = L.circleMarker(rotatePt1, { radius: 8, weight: 2 }).addTo(map);
@@ -532,7 +722,8 @@
 
         const p1 = latLngToEN(rotatePt1);
         const p2 = latLngToEN(rotatePt2);
-        rotationRad = Math.atan2(p2.n - p1.n, p2.e - p1.e);
+        const thetaFromEast = Math.atan2(p2.n - p1.n, p2.e - p1.e);
+        rotationRad = thetaFromEast - (Math.PI / 2);
 
         updateRotationDisplay();
         redrawGrid();
@@ -548,13 +739,7 @@
   // ---------------------------
   document.getElementById('pickCentreBtn').addEventListener('click', () => {
     setMode('centre');
-    if (useCrosshairEl.checked) {
-      centreLatLng = crosshairLatLng();
-      if (centreMarker) centreMarker.remove();
-      centreMarker = L.marker(centreLatLng, { draggable: true }).addTo(map);
-      centreMarker.on('drag', () => { centreLatLng = centreMarker.getLatLng(); redrawGrid(); });
-      redrawGrid();
-    }
+    if (useCrosshairEl.checked) setCentre(crosshairLatLng());
   });
 
   document.getElementById('pickRotateBtn').addEventListener('click', () => {
@@ -566,6 +751,7 @@
   document.getElementById('resetBtn').addEventListener('click', () => {
     centreLatLng = null;
     rotationRad = 0;
+    userRotated = false;
     updateRotationDisplay();
 
     if (centreMarker) { centreMarker.remove(); centreMarker = null; }
@@ -574,12 +760,10 @@
     rotatePt1 = null; rotatePt2 = null;
 
     gridLayer.clearLayers();
+    clearGrips();
     setMode('centre');
   });
 
-  exportBtn.addEventListener('click', exportDXF);
-
-  // GPS button
   document.getElementById('gpsBtn').addEventListener('click', () => {
     map.locate({
       setView: true,
@@ -590,11 +774,8 @@
   });
 
   map.on('locationfound', (e) => {
-    centreLatLng = e.latlng;
-
-    if (centreMarker) centreMarker.remove();
-    centreMarker = L.marker(centreLatLng, { draggable: true }).addTo(map);
-    centreMarker.on('drag', () => { centreLatLng = centreMarker.getLatLng(); redrawGrid(); });
+    // GPS sets centre; if auto north is on and user hasn't rotated, it aligns to true north
+    setCentre(e.latlng);
 
     if (window._gpsAccuracy) window._gpsAccuracy.remove();
     window._gpsAccuracy = L.circle(e.latlng, {
@@ -603,16 +784,25 @@
       opacity: 0.6,
       fillOpacity: 0.08
     }).addTo(map);
-
-    redrawGrid();
   });
 
   map.on('locationerror', (e) => {
     alert("Couldn't get GPS location: " + (e.message || "permission denied / unavailable"));
   });
 
-  gridSizeEl.addEventListener('input', redrawGrid);
-  gridSpacingEl.addEventListener('input', redrawGrid);
+  exportBtn.addEventListener('click', exportDXF);
+
+  gridSizeEl.addEventListener('input', () => { redrawGrid(); });
+  gridSpacingEl.addEventListener('input', () => { redrawGrid(); });
+
+  autoNorthEl.addEventListener('change', () => {
+    // if turning auto-north back on, and user hasn't “locked” rotation, re-align immediately
+    if (centreLatLng && autoNorthEl.checked && !userRotated) {
+      rotationRad = trueNorthRotationRad(centreLatLng);
+      updateRotationDisplay();
+      redrawGrid();
+    }
+  });
 
   useCrosshairEl.addEventListener('change', () => {
     crosshairEl.style.display = useCrosshairEl.checked ? 'block' : 'none';
@@ -635,7 +825,6 @@
     sheet.classList.toggle('is-collapsed', which === 'closed');
   }
 
-  // tap handle toggles half/closed
   handle.addEventListener('click', () => {
     setSheetSnap(currentSnap === 'closed' ? 'half' : 'closed');
   });
@@ -680,7 +869,6 @@
     dragging = false;
     sheet.style.transition = 'transform 180ms ease';
 
-    // If it was basically a click/tap, don't snap it away
     if (!hasMoved) return;
 
     const now = getTranslateVhFromStyle();
