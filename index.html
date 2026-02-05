@@ -28,10 +28,8 @@
     html, body { height: 100%; margin: 0; background: #0b0f19; }
     #map { height: 100%; width: 100%; }
 
-    /* Ensure Leaflet controls (search/zoom) sit above the sheet and are tappable */
     .leaflet-top, .leaflet-bottom { z-index: 10050 !important; }
 
-    /* --- Draggable bottom sheet --- */
     .sheet {
       position: fixed;
       left: 0; right: 0; bottom: 0;
@@ -144,6 +142,7 @@
       border: 1px solid #c7d2fe;
       padding: 10px;
       border-radius: 14px;
+      white-space: pre-wrap;
     }
 
     .mini {
@@ -153,7 +152,6 @@
       line-height: 1.35;
     }
 
-    /* Crosshair overlay (optional) */
     .crosshair {
       position: fixed;
       left: 50%;
@@ -194,18 +192,16 @@
     .toggle span { font-size: 13px; color: #111827; font-weight: 700; }
     .toggle input { transform: scale(1.3); }
 
-    /* make leaflet controls bigger on mobile */
     .leaflet-control-zoom a { width: 40px; height: 40px; line-height: 40px; font-size: 18px; }
     .leaflet-control-geocoder { max-width: 70vw; }
 
-    /* Grip icons (bigger + touch-friendly) */
     .grip {
       width: 26px; height: 26px;
       border-radius: 7px;
       border: 2px solid #111827;
       background: rgba(255,255,255,0.96);
       box-shadow: 0 3px 12px rgba(0,0,0,0.28);
-      touch-action: none;           /* key for smooth dragging */
+      touch-action: none;
       pointer-events: auto;
     }
     .rotgrip {
@@ -243,7 +239,6 @@
       <div class="badge" id="modeBadge">centre pick</div>
     </div>
 
-    <!-- ACTIONS FIRST -->
     <div class="row">
       <button class="btn" id="pickCentreBtn">Pick centre</button>
       <button class="btn secondary" id="pickRotateBtn">Pick rotation</button>
@@ -264,7 +259,6 @@
       <button class="btn secondary" id="resetBtn">Reset</button>
     </div>
 
-    <!-- OPTIONS -->
     <div class="toggle">
       <span>Use crosshair to pick points</span>
       <input id="useCrosshair" type="checkbox" />
@@ -280,7 +274,6 @@
       <input id="autoNorth" type="checkbox" checked />
     </div>
 
-    <!-- GRID SETTINGS LOWER DOWN -->
     <div class="grid2" style="margin-top:10px;">
       <div class="field">
         <label for="gridWidth">Grid width (m)</label>
@@ -308,7 +301,7 @@
       </div>
     </div>
 
-    <div class="status" id="statusBox">Loading OSTN15 grid…</div>
+    <div class="status" id="statusBox">Starting…</div>
     <div class="mini">
       Grips: drag corners to stretch rectangle, drag round grip to rotate. Boundary: tap points, then Finish.
     </div>
@@ -332,11 +325,19 @@
   });
 
   // ---------------------------
-  // OSGB36(15) / OSTN15
+  // DOM refs
   // ---------------------------
   const statusBox = document.getElementById('statusBox');
   const exportBtn = document.getElementById('exportBtn');
 
+  // Show JS errors in the status panel (super helpful on phone)
+  window.addEventListener('error', (ev) => {
+    statusBox.textContent = 'JS error: ' + (ev.message || ev.error || 'unknown');
+  });
+
+  // ---------------------------
+  // OSGB36(15) / OSTN15
+  // ---------------------------
   const OSTN15_TIFF_URL = 'https://cdn.proj.org/uk_os_OSTN15_NTv2_OSGBtoETRS.tif';
   const EPSG27700_DEF_BASE =
     '+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 ' +
@@ -345,45 +346,6 @@
   proj4.defs('EPSG:4326', '+proj=longlat +datum=WGS84 +no_defs +type=crs');
 
   let ostnReady = false;
-
-  async function loadOSTN15() {
-    try {
-      statusBox.textContent = 'Loading OSTN15 grid (needs internet)…';
-      const tiff = await GeoTIFF.fromUrl(OSTN15_TIFF_URL);
-      await proj4.nadgrid('OSTN15_NTv2_OSGBtoETRS', tiff).ready;
-
-      proj4.defs('EPSG:27700', EPSG27700_DEF_BASE + ' +nadgrids=OSTN15_NTv2_OSGBtoETRS');
-      ostnReady = true;
-      statusBox.textContent = 'OSTN15 loaded ✅ (OSGB36(15) accurate)';
-      exportBtn.disabled = false;
-
-      if (centreLatLng && autoNorthEl.checked && !userRotated) {
-        rotationRad = trueNorthRotationRad(centreLatLng);
-        updateRotationDisplay();
-      }
-      redrawAll();
-    } catch (e) {
-      console.error(e);
-      statusBox.textContent =
-        'OSTN15 failed to load ⚠️ Using rough fallback (not survey-grade). Host on GitHub Pages for best results.';
-      proj4.defs(
-        'EPSG:27700',
-        '+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 ' +
-        '+x_0=400000 +y_0=-100000 +ellps=airy ' +
-        '+towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489 ' +
-        '+units=m +no_defs +type=crs'
-      );
-      ostnReady = false;
-      exportBtn.disabled = false;
-
-      if (centreLatLng && autoNorthEl.checked && !userRotated) {
-        rotationRad = trueNorthRotationRad(centreLatLng);
-        updateRotationDisplay();
-      }
-      redrawAll();
-    }
-  }
-  
 
   // ---------------------------
   // State
@@ -395,20 +357,20 @@
   let rotatePt2 = null;
   let rotationRad = 0;
 
-  // If user sets rotation (pick rotation or rotation grip), we stop auto-northing.
   let userRotated = false;
 
   let centreMarker = null;
   let rotateMarkers = [];
 
-  let gridLayer = L.layerGroup().addTo(map);
-  let gripLayer = L.layerGroup().addTo(map);
+  const gridLayer = L.layerGroup().addTo(map);
+  const gripLayer = L.layerGroup().addTo(map);
 
   // Boundary drawing
-  let boundaryLatLngs = [];          // array of Leaflet latlngs
-  let boundaryPreviewLine = null;    // Leaflet polyline
-  let boundaryPointsLayer = L.layerGroup().addTo(map);
+  let boundaryLatLngs = [];
+  let boundaryPreviewLine = null;
+  const boundaryPointsLayer = L.layerGroup().addTo(map);
 
+  // UI refs
   const modeBadge = document.getElementById('modeBadge');
   const rotDegEl = document.getElementById('rotDeg');
 
@@ -466,8 +428,7 @@
     return { e: e * c - n * s, n: e * s + n * c };
   }
 
-  // True-north alignment:
-  // Compute direction of "lat + tiny" in EN, then rotate grid so its +N matches that.
+  // True-north alignment (via tiny lat step)
   function trueNorthRotationRad(latlng) {
     const dLat = 0.00015; // ~17m
     const p0 = latLngToEN(latlng);
@@ -479,13 +440,12 @@
   }
 
   // ---------------------------
-  // Grid generation in EN (rectangle)
+  // Grid generation (rectangle)
   // ---------------------------
   function buildGridLinesEN(centreEN, widthM, heightM, spacingM, angRad) {
     const halfW = widthM / 2;
     const halfH = heightM / 2;
 
-    // steps for each axis (try to keep outer border exact)
     const stepsX = Math.max(1, Math.round(widthM / spacingM));
     const stepsY = Math.max(1, Math.round(heightM / spacingM));
     const stepX = widthM / stepsX;
@@ -493,7 +453,6 @@
 
     const lines = [];
 
-    // vertical lines: x varies, y from -halfH to +halfH
     for (let i = 0; i <= stepsX; i++) {
       const x = -halfW + i * stepX;
       let e1 = centreEN.e + x, n1 = centreEN.n - halfH;
@@ -504,7 +463,6 @@
       lines.push({ e1: a.e, n1: a.n, e2: b.e, n2: b.n });
     }
 
-    // horizontal lines: y varies, x from -halfW to +halfW
     for (let j = 0; j <= stepsY; j++) {
       const y = -halfH + j * stepY;
       let e1 = centreEN.e - halfW, n1 = centreEN.n + y;
@@ -519,7 +477,7 @@
   }
 
   // ---------------------------
-  // Grips: 4 corners (stretch) + 1 rotate
+  // Grips: 4 corners stretch + 1 rotate
   // ---------------------------
   function makeDivIcon(className) {
     return L.divIcon({
@@ -531,14 +489,12 @@
   }
 
   function stopIconFromStealingMapGestures(marker) {
-    // Make dragging smooth on mobile: stop touch/pointer events bubbling to map
     marker.on('add', () => {
       const el = marker.getElement();
       if (!el) return;
       L.DomEvent.disableClickPropagation(el);
       L.DomEvent.disableScrollPropagation(el);
 
-      // Stop pointer/touch events reaching the map (prevents “tap-tap” feeling)
       const stop = (e) => L.DomEvent.stopPropagation(e);
       ['pointerdown','pointermove','pointerup','touchstart','touchmove','touchend','mousedown','mousemove','mouseup']
         .forEach(evt => L.DomEvent.on(el, evt, stop));
@@ -559,13 +515,8 @@
     }
   }
 
-  let cornerGrips = [];
-  let rotateGrip = null;
-
   function clearGrips() {
     gripLayer.clearLayers();
-    cornerGrips = [];
-    rotateGrip = null;
   }
 
   function updateGrips() {
@@ -580,7 +531,6 @@
     const halfW = widthM / 2;
     const halfH = heightM / 2;
 
-    // local (unrotated) corners
     const localCorners = [
       { x: -halfW, y: -halfH },
       { x:  halfW, y: -halfH },
@@ -588,7 +538,6 @@
       { x: -halfW, y:  halfH }
     ];
 
-    // place the 4 stretch grips
     localCorners.forEach((c) => {
       const p = rotateAboutEN(centreEN.e + c.x, centreEN.n + c.y, centreEN.e, centreEN.n, rotationRad);
       const ll = enToLatLng(p.e, p.n);
@@ -606,13 +555,11 @@
       m.on('dragstart', () => setMapInteraction(false));
       m.on('dragend', () => setMapInteraction(true));
 
-      // Smooth stretch: project dragged point back into local axes
       m.on('drag', () => {
         const p2 = latLngToEN(m.getLatLng());
         const dE = p2.e - centreEN.e;
         const dN = p2.n - centreEN.n;
 
-        // Rotate vector back by -rotationRad to get local coords
         const local = rotateVec(dE, dN, -rotationRad);
 
         const newHalfW = Math.max(0.5, Math.abs(local.e));
@@ -623,16 +570,14 @@
 
         redrawAll();
       });
-
-      cornerGrips.push(m);
     });
 
-    // rotation grip: above the top edge in local coords
+    // rotation grip
     const rotOffset = Math.max(halfH * 1.25, 10);
     const rotEN = rotateAboutEN(centreEN.e, centreEN.n + rotOffset, centreEN.e, centreEN.n, rotationRad);
     const rotLL = enToLatLng(rotEN.e, rotEN.n);
 
-    rotateGrip = L.marker(rotLL, {
+    const rotateGrip = L.marker(rotLL, {
       draggable: true,
       icon: makeDivIcon('rotgrip'),
       keyboard: false,
@@ -660,7 +605,7 @@
   }
 
   // ---------------------------
-  // Boundary drawing (point to point)
+  // Boundary drawing
   // ---------------------------
   function redrawBoundaryPreview() {
     if (boundaryPreviewLine) boundaryPreviewLine.remove();
@@ -675,7 +620,6 @@
 
     boundaryPreviewLine = L.polyline(boundaryLatLngs, { weight: 3, opacity: 0.9 }).addTo(map);
 
-    // show small point markers
     boundaryLatLngs.forEach(ll => {
       L.circleMarker(ll, { radius: 5, weight: 2, opacity: 0.9, fillOpacity: 0.2 }).addTo(boundaryPointsLayer);
     });
@@ -697,7 +641,7 @@
   }
 
   // ---------------------------
-  // Redraw all (grid + grips + boundary preview stays)
+  // Redraw
   // ---------------------------
   function redrawGrid() {
     gridLayer.clearLayers();
@@ -721,14 +665,13 @@
   function redrawAll() {
     redrawGrid();
     updateGrips();
-    // boundary preview is independent (no need to rebuild on grid changes)
   }
 
   // ---------------------------
   // DXF export (Grid BLUE, Boundary RED)
   // ---------------------------
-  const DXF_COLOR_RED = 1;   // ACI
-  const DXF_COLOR_BLUE = 5;  // ACI
+  const DXF_COLOR_RED = 1;
+  const DXF_COLOR_BLUE = 5;
 
   function dxfLineEntity(x1, y1, x2, y2, layer, aciColor) {
     return [
@@ -745,8 +688,7 @@
   }
 
   function dxfLWPolyline(pointsXY, layer, aciColor, closed=false) {
-    // pointsXY: [{x,y}, ...]
-    const flag = closed ? 1 : 0; // bit 1 = closed
+    const flag = closed ? 1 : 0;
     let out = "";
     out += "0\nLWPOLYLINE\n";
     out += "8\n" + layer + "\n";
@@ -766,8 +708,8 @@
     const widthM = parseFloat(gridWidthEl.value);
     const heightM = parseFloat(gridHeightEl.value);
     const spacingM = parseFloat(gridSpacingEl.value);
-    const gridLayer = (layerNameEl.value || "GRID").trim();
-    const bndLayer = (boundaryLayerNameEl.value || "BOUNDARY").trim();
+    const gridLayerName = (layerNameEl.value || "GRID").trim();
+    const bndLayerName = (boundaryLayerNameEl.value || "BOUNDARY").trim();
     const rel = !!relativeExportEl.checked;
 
     if (!(widthM > 0) || !(heightM > 0) || !(spacingM > 0)) {
@@ -777,9 +719,7 @@
 
     const centreEN = latLngToEN(centreLatLng);
 
-    // Grid lines (absolute EN)
     const linesAbs = buildGridLinesEN(centreEN, widthM, heightM, spacingM, rotationRad);
-
     const lines = linesAbs.map(l => rel ? ({
       x1: l.e1 - centreEN.e, y1: l.n1 - centreEN.n,
       x2: l.e2 - centreEN.e, y2: l.n2 - centreEN.n
@@ -788,7 +728,6 @@
       x2: l.e2, y2: l.n2
     }));
 
-    // Boundary polyline (if any)
     let boundaryXY = null;
     if (boundaryLatLngs.length >= 2) {
       boundaryXY = boundaryLatLngs.map(ll => {
@@ -799,19 +738,12 @@
 
     let dxf = "";
     dxf += "0\nSECTION\n2\nHEADER\n";
-    dxf += "9\n$INSUNITS\n70\n6\n"; // meters
+    dxf += "9\n$INSUNITS\n70\n6\n";
     dxf += "0\nENDSEC\n";
     dxf += "0\nSECTION\n2\nENTITIES\n";
 
-    // Grid BLUE
-    for (const ln of lines) {
-      dxf += dxfLineEntity(ln.x1, ln.y1, ln.x2, ln.y2, gridLayer, DXF_COLOR_BLUE);
-    }
-
-    // Boundary RED
-    if (boundaryXY) {
-      dxf += dxfLWPolyline(boundaryXY, bndLayer, DXF_COLOR_RED, false);
-    }
+    for (const ln of lines) dxf += dxfLineEntity(ln.x1, ln.y1, ln.x2, ln.y2, gridLayerName, DXF_COLOR_BLUE);
+    if (boundaryXY) dxf += dxfLWPolyline(boundaryXY, bndLayerName, DXF_COLOR_RED, false);
 
     dxf += "0\nENDSEC\n0\nEOF\n";
 
@@ -829,7 +761,6 @@
 
     document.body.appendChild(a);
     a.click();
-    // fallback open for mobile
     setTimeout(() => window.open(url, "_blank"), 250);
 
     a.remove();
@@ -888,6 +819,7 @@
         rotateMarkers.push(m1);
         return;
       }
+
       if (!rotatePt2) {
         rotatePt2 = picked;
         const m2 = L.circleMarker(rotatePt2, { radius: 8, weight: 2 }).addTo(map);
@@ -897,7 +829,6 @@
         const p2 = latLngToEN(rotatePt2);
         const thetaFromEast = Math.atan2(p2.n - p1.n, p2.e - p1.e);
         rotationRad = thetaFromEast - (Math.PI / 2);
-        loadOSTN15();
 
         updateRotationDisplay();
         redrawAll();
@@ -926,6 +857,7 @@
 
   document.getElementById('resetBtn').addEventListener('click', () => {
     stopBoundaryMode();
+
     centreLatLng = null;
     rotationRad = 0;
     userRotated = false;
@@ -933,13 +865,12 @@
 
     if (centreMarker) { centreMarker.remove(); centreMarker = null; }
     rotateMarkers.forEach(m => m.remove());
-    rotateMarkers = [];
+    rotateMarkers.length = 0;
     rotatePt1 = null; rotatePt2 = null;
 
     gridLayer.clearLayers();
     clearGrips();
 
-    // boundary
     boundaryLatLngs = [];
     if (boundaryPreviewLine) boundaryPreviewLine.remove();
     boundaryPreviewLine = null;
@@ -973,14 +904,8 @@
 
   exportBtn.addEventListener('click', exportDXF);
 
-  // Boundary UI
-  drawBoundaryBtn.addEventListener('click', () => {
-    startBoundaryMode();
-  });
-
-  finishBoundaryBtn.addEventListener('click', () => {
-    stopBoundaryMode();
-  });
+  drawBoundaryBtn.addEventListener('click', () => startBoundaryMode());
+  finishBoundaryBtn.addEventListener('click', () => stopBoundaryMode());
 
   clearBoundaryBtn.addEventListener('click', () => {
     boundaryLatLngs = [];
@@ -992,7 +917,6 @@
     stopBoundaryMode();
   });
 
-  // Inputs
   gridWidthEl.addEventListener('input', redrawAll);
   gridHeightEl.addEventListener('input', redrawAll);
   gridSpacingEl.addEventListener('input', redrawAll);
@@ -1010,7 +934,7 @@
   });
 
   // ---------------------------
-  // Draggable bottom sheet (3 snap positions) with desktop fix
+  // Bottom sheet snapping (your file was cut off here)
   // ---------------------------
   const sheet = document.getElementById('sheet');
   const handle = document.getElementById('handle');
@@ -1023,4 +947,110 @@
   function setSheetSnap(which) {
     currentSnap = which;
     sheet.style.transform = `translateY(${snaps[which]}vh)`;
-    sheet.cl
+    sheet.classList.toggle('is-collapsed', which === 'closed');
+  }
+
+  handle.addEventListener('click', () => {
+    setSheetSnap(currentSnap === 'closed' ? 'half' : 'closed');
+  });
+
+  let dragging = false;
+  let startY = 0;
+  let startTranslateVh = snaps[currentSnap];
+  let hasMoved = false;
+
+  function getTranslateVhFromStyle() {
+    const m = sheet.style.transform.match(/translateY\(([-0-9.]+)vh\)/);
+    return m ? parseFloat(m[1]) : snaps.half;
+  }
+
+  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+  handle.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    hasMoved = false;
+    handle.setPointerCapture(e.pointerId);
+    sheet.style.transition = 'none';
+    startY = e.clientY;
+    startTranslateVh = getTranslateVhFromStyle();
+  });
+
+  handle.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+
+    const dyPx = e.clientY - startY;
+    if (Math.abs(dyPx) > 6) hasMoved = true;
+
+    const vhPx = window.innerHeight / 100;
+    const dyVh = dyPx / vhPx;
+
+    let next = startTranslateVh + dyVh;
+    next = clamp(next, 0, 72);
+    sheet.style.transform = `translateY(${next}vh)`;
+  });
+
+  handle.addEventListener('pointerup', () => {
+    if (!dragging) return;
+    dragging = false;
+    sheet.style.transition = 'transform 180ms ease';
+
+    if (!hasMoved) return;
+
+    const now = getTranslateVhFromStyle();
+    const options = Object.entries(snaps);
+    let best = options[0];
+    for (const opt of options) {
+      if (Math.abs(opt[1] - now) < Math.abs(best[1] - now)) best = opt;
+    }
+    setSheetSnap(best[0]);
+  });
+
+  // ---------------------------
+  // OSTN15 loader (MUST be called after state+DOM exist)
+  // ---------------------------
+  async function loadOSTN15() {
+    try {
+      statusBox.textContent = 'Loading OSTN15 grid (needs internet)…';
+      const tiff = await GeoTIFF.fromUrl(OSTN15_TIFF_URL);
+      await proj4.nadgrid('OSTN15_NTv2_OSGBtoETRS', tiff).ready;
+
+      proj4.defs('EPSG:27700', EPSG27700_DEF_BASE + ' +nadgrids=OSTN15_NTv2_OSGBtoETRS');
+      ostnReady = true;
+      statusBox.textContent = 'OSTN15 loaded ✅ (OSGB36(15) accurate)';
+      exportBtn.disabled = false;
+
+      if (centreLatLng && autoNorthEl.checked && !userRotated) {
+        rotationRad = trueNorthRotationRad(centreLatLng);
+        updateRotationDisplay();
+      }
+      redrawAll();
+    } catch (e) {
+      console.error(e);
+      statusBox.textContent =
+        'OSTN15 failed ⚠️ Using fallback (not survey-grade). Host via HTTPS for best results.';
+      proj4.defs(
+        'EPSG:27700',
+        '+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 ' +
+        '+x_0=400000 +y_0=-100000 +ellps=airy ' +
+        '+towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489 ' +
+        '+units=m +no_defs +type=crs'
+      );
+      ostnReady = false;
+      exportBtn.disabled = false;
+
+      if (centreLatLng && autoNorthEl.checked && !userRotated) {
+        rotationRad = trueNorthRotationRad(centreLatLng);
+        updateRotationDisplay();
+      }
+      redrawAll();
+    }
+  }
+
+  // Start up
+  updateRotationDisplay();
+  redrawBoundaryPreview();
+  loadOSTN15();
+  statusBox.textContent = 'Ready. Search top-right, then pick centre.';
+</script>
+</body>
+</html>
