@@ -28,6 +28,9 @@
     html, body { height: 100%; margin: 0; background: #0b0f19; }
     #map { height: 100%; width: 100%; }
 
+    /* Ensure Leaflet controls (search/zoom) sit above the sheet and are tappable */
+    .leaflet-top, .leaflet-bottom { z-index: 10050 !important; }
+
     /* --- Draggable bottom sheet --- */
     .sheet {
       position: fixed;
@@ -59,12 +62,12 @@
       touch-action: none;
     }
 
-    .sheet.is-collapsed {
-      overflow: hidden;
-    }
+    .sheet.is-collapsed { overflow: hidden; }
     .sheet.is-collapsed .mini,
-    .sheet.is-collapsed .status {
-      display: none;
+    .sheet.is-collapsed .status { display: none; }
+
+    @media (hover: hover) {
+      .handle { cursor: ns-resize; }
     }
 
     .toprow {
@@ -169,14 +172,8 @@
       background: rgba(255,255,255,0.9);
       box-shadow: 0 1px 4px rgba(0,0,0,0.35);
     }
-    .crosshair:before { /* vertical */
-      left: 50%; top: 0; width: 2px; height: 100%;
-      transform: translateX(-50%);
-    }
-    .crosshair:after { /* horizontal */
-      top: 50%; left: 0; height: 2px; width: 100%;
-      transform: translateY(-50%);
-    }
+    .crosshair:before { left: 50%; top: 0; width: 2px; height: 100%; transform: translateX(-50%); }
+    .crosshair:after  { top: 50%; left: 0; height: 2px; width: 100%; transform: translateY(-50%); }
     .crosshair .dot {
       position: absolute;
       left: 50%; top: 50%;
@@ -216,7 +213,34 @@
       <div class="badge" id="modeBadge">centre pick</div>
     </div>
 
-    <div class="grid2">
+    <!-- ACTIONS FIRST (top) -->
+    <div class="row">
+      <button class="btn" id="pickCentreBtn">Pick centre</button>
+      <button class="btn secondary" id="pickRotateBtn">Pick rotation</button>
+    </div>
+
+    <div class="row">
+      <button class="btn secondary" id="gpsBtn">Use GPS for centre</button>
+      <button class="btn" id="exportBtn" disabled>Export DXF</button>
+    </div>
+
+    <div class="row">
+      <button class="btn secondary" id="resetBtn">Reset</button>
+    </div>
+
+    <!-- OPTIONS NEXT -->
+    <div class="toggle">
+      <span>Use crosshair to pick points</span>
+      <input id="useCrosshair" type="checkbox" />
+    </div>
+
+    <div class="toggle">
+      <span>Export relative to centre</span>
+      <input id="relativeExport" type="checkbox" />
+    </div>
+
+    <!-- GRID SETTINGS LOWER DOWN -->
+    <div class="grid2" style="margin-top:10px;">
       <div class="field">
         <label for="gridSize">Grid size (m) (square)</label>
         <input id="gridSize" type="number" min="1" step="1" value="300" />
@@ -233,26 +257,6 @@
         <label>Rotation (deg)</label>
         <div style="font-size:16px;font-weight:900;" id="rotDeg">0.000</div>
       </div>
-    </div>
-
-    <div class="toggle">
-      <span>Use crosshair to pick points</span>
-      <input id="useCrosshair" type="checkbox" />
-    </div>
-
-    <div class="toggle">
-      <span>Export relative to centre</span>
-      <input id="relativeExport" type="checkbox" />
-    </div>
-
-    <div class="row">
-      <button class="btn" id="pickCentreBtn">Pick centre</button>
-      <button class="btn secondary" id="pickRotateBtn">Pick rotation</button>
-    </div>
-
-    <div class="row">
-      <button class="btn secondary" id="resetBtn">Reset</button>
-      <button class="btn" id="exportBtn" disabled>Export DXF</button>
     </div>
 
     <div class="status" id="statusBox">Loading OSTN15 grid…</div>
@@ -272,7 +276,12 @@
     { maxZoom: 20, attribution: 'Tiles © Esri' }
   ).addTo(map);
 
-  L.Control.geocoder({ defaultMarkGeocode: true }).addTo(map);
+  // Better geocoder behavior (fits bounds reliably)
+  const geocodeControl = L.Control.geocoder({ defaultMarkGeocode: false }).addTo(map);
+  geocodeControl.on('markgeocode', function(e) {
+    const bbox = e.geocode.bbox;
+    map.fitBounds(bbox);
+  });
 
   // ---------------------------
   // OSGB36(15) / OSTN15
@@ -383,11 +392,9 @@
     for (let i = 0; i <= nSteps; i++) {
       const off = -half + i * step;
 
-      // vertical
       let e1 = centreEN.e + off, n1 = centreEN.n - half;
       let e2 = centreEN.e + off, n2 = centreEN.n + half;
 
-      // horizontal
       let e3 = centreEN.e - half, n3 = centreEN.n + off;
       let e4 = centreEN.e + half, n4 = centreEN.n + off;
 
@@ -470,18 +477,25 @@
 
     const a = document.createElement("a");
     a.href = url;
+    a.style.display = "none";
+    a.rel = "noopener";
+    a.target = "_blank";
+
     const deg = (rotationRad * 180 / Math.PI).toFixed(1);
     a.download = `grid_${rel ? "REL" : "OSGB"}_${sizeM}m_${spacingM}m_${deg}deg.dxf`;
+
     document.body.appendChild(a);
     a.click();
+
+    // Fallback open (mobile browsers sometimes ignore download)
+    setTimeout(() => window.open(url, "_blank"), 250);
+
     a.remove();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
   }
 
   // ---------------------------
-  // Picking logic (tap-friendly)
-  // If crosshair is ON, pick from map center.
-  // Else, pick from tap location.
+  // Picking logic
   // ---------------------------
   function getPickLatLng(tapLatLng) {
     return useCrosshairEl.checked ? crosshairLatLng() : tapLatLng;
@@ -529,7 +543,9 @@
     }
   });
 
+  // ---------------------------
   // Buttons
+  // ---------------------------
   document.getElementById('pickCentreBtn').addEventListener('click', () => {
     setMode('centre');
     if (useCrosshairEl.checked) {
@@ -563,6 +579,38 @@
 
   exportBtn.addEventListener('click', exportDXF);
 
+  // GPS button
+  document.getElementById('gpsBtn').addEventListener('click', () => {
+    map.locate({
+      setView: true,
+      maxZoom: 19,
+      enableHighAccuracy: true,
+      timeout: 15000
+    });
+  });
+
+  map.on('locationfound', (e) => {
+    centreLatLng = e.latlng;
+
+    if (centreMarker) centreMarker.remove();
+    centreMarker = L.marker(centreLatLng, { draggable: true }).addTo(map);
+    centreMarker.on('drag', () => { centreLatLng = centreMarker.getLatLng(); redrawGrid(); });
+
+    if (window._gpsAccuracy) window._gpsAccuracy.remove();
+    window._gpsAccuracy = L.circle(e.latlng, {
+      radius: e.accuracy,
+      weight: 1,
+      opacity: 0.6,
+      fillOpacity: 0.08
+    }).addTo(map);
+
+    redrawGrid();
+  });
+
+  map.on('locationerror', (e) => {
+    alert("Couldn't get GPS location: " + (e.message || "permission denied / unavailable"));
+  });
+
   gridSizeEl.addEventListener('input', redrawGrid);
   gridSpacingEl.addEventListener('input', redrawGrid);
 
@@ -571,17 +619,12 @@
   });
 
   // ---------------------------
-  // Draggable bottom sheet (3 snap positions)
+  // Draggable bottom sheet (3 snap positions) with desktop fix
   // ---------------------------
   const sheet = document.getElementById('sheet');
   const handle = document.getElementById('handle');
 
-  // translateY in vh (bigger = more hidden)
-  const snaps = {
-    open: 6,
-    half: 44,
-    closed: 66
-  };
+  const snaps = { open: 6, half: 44, closed: 66 };
 
   let currentSnap = 'half';
   setSheetSnap(currentSnap);
@@ -600,6 +643,7 @@
   let dragging = false;
   let startY = 0;
   let startTranslateVh = snaps[currentSnap];
+  let hasMoved = false;
 
   function getTranslateVhFromStyle() {
     const m = sheet.style.transform.match(/translateY\(([-0-9.]+)vh\)/);
@@ -610,6 +654,7 @@
 
   handle.addEventListener('pointerdown', (e) => {
     dragging = true;
+    hasMoved = false;
     handle.setPointerCapture(e.pointerId);
     sheet.style.transition = 'none';
     startY = e.clientY;
@@ -620,6 +665,8 @@
     if (!dragging) return;
 
     const dyPx = e.clientY - startY;
+    if (Math.abs(dyPx) > 6) hasMoved = true;
+
     const vhPx = window.innerHeight / 100;
     const dyVh = dyPx / vhPx;
 
@@ -632,6 +679,9 @@
     if (!dragging) return;
     dragging = false;
     sheet.style.transition = 'transform 180ms ease';
+
+    // If it was basically a click/tap, don't snap it away
+    if (!hasMoved) return;
 
     const now = getTranslateVhFromStyle();
     const options = Object.entries(snaps);
