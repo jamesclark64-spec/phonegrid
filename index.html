@@ -433,7 +433,6 @@
       (m === 'centre') ? 'centre pick' :
       (m === 'rotate') ? 'rotation pick' :
       'boundary draw';
-loadOSTN15();
   }
 
   function updateRotationDisplay() {
@@ -898,6 +897,7 @@ loadOSTN15();
         const p2 = latLngToEN(rotatePt2);
         const thetaFromEast = Math.atan2(p2.n - p1.n, p2.e - p1.e);
         rotationRad = thetaFromEast - (Math.PI / 2);
+        loadOSTN15();
 
         updateRotationDisplay();
         redrawAll();
